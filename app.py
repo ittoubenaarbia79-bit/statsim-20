@@ -17,9 +17,12 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.cluster import KMeans
 from sklearn.metrics import (accuracy_score, classification_report, confusion_matrix,
-                              f1_score, precision_score, roc_auc_score, mean_absolute_error,
-                              silhouette_score)
+                              f1_score, precision_score, recall_score,
+                              roc_auc_score, mean_absolute_error, log_loss,
+                              matthews_corrcoef, silhouette_score)
 from scipy.stats import weibull_min
+import matplotlib
+matplotlib.use("Agg")
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -49,8 +52,7 @@ plt.rcParams.update({
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url("https://fonts.googleapis.com/css2?family=Rajdhani:wght@700&family=Share+Tech+Mono&display=swap");
-html, body, [class*="css"] { font-family: "Share Tech Mono", monospace; }
+html, body, [class*="css"] { font-family: "Courier New", monospace; }
 .main-title {
     text-align: center; font-family: "Rajdhani", sans-serif;
     font-size: 48px; font-weight: 700; letter-spacing: 10px;
@@ -98,19 +100,37 @@ with st.sidebar:
     st.markdown("### 📊 STATSIM v4")
     st.markdown("---")
     section = st.radio("Navigation", [
-        "📂 Import Dataset",
+        "📂 Import CSV",
         "🔍 Types de Variables",
         "📊 Statistiques Descriptives",
-        "📋 Tableaux de Fréquence",
-        "🔗 Corrélation",
-        "📈 Régression",
-        "⚗️ ANOVA",
-        "🤖 Classification",
         "🧪 Tests d'Hypothèse",
-        "🎨 Graphiques"
+        "🔗 Corrélation",
+        "📋 Fréquence & Fréquence Cumulée",
+        "🎨 Graphiques",
+        "📈 Régression",
+        "🤖 Classification",
+        "📊 Métriques"
     ], label_visibility="collapsed")
     st.markdown("---")
-    st.markdown('<div style="font-size:9px;color:#8a9bbf;letter-spacing:2px">PROJET STAT APPLIQUÉ IA</div>', unsafe_allow_html=True)
+
+    # Info par section
+    info_map = {
+        "📂 Import CSV": "📁 **Import**\nChargez un fichier CSV ou générez un dataset exemple (150 lignes, 7 variables).",
+        "🔍 Types de Variables": "🔎 **Types**\nDétecte automatiquement : Binaire · Ordinale · Continue · Catégorielle · ID.",
+        "📊 Statistiques Descriptives": "📐 **Stats**\nMoyenne · Médiane · Écart-type · Variance · Q1/Q3 · IQR · Skewness · Kurtosis · Outliers.",
+        "🧪 Tests d'Hypothèse": "🧬 **Tests**\nStudent (1 & 2 éch.) · Shapiro-Wilk · KS · Chi-Deux · Mann-Whitney.\nVisualisation zone de rejet.",
+        "🔗 Corrélation": "🔗 **Corrélation**\nMatrice Pearson / Spearman / Kendall.\nPaires les plus corrélées + distribution des r.",
+        "📋 Fréquence & Fréquence Cumulée": "📋 **Fréquences**\nTableau complet · Fréquence absolue · Relative · **Cumulée** · Ogive.\nPP-Plot · Weibull · Benford.",
+        "🎨 Graphiques": "🎨 **Graphiques**\nScatter · Histogramme · Box Plot · QQ-Plot · Violin · Histo multiples · Scatter Matrix.",
+        "📈 Régression": "📈 **Régression**\nLinéaire simple & multiple.\nR² · R² ajusté · RMSE · Coefficients β · Prédiction en temps réel.",
+        "🤖 Classification": "🤖 **Classification**\nKNN · Naive Bayes · Logistique · SVM · Arbre · Random Forest · K-Means · ACP · ACM.\nPrédiction instantanée.",
+        "📊 Métriques": "📊 **Métriques**\nAccuracy · F1-Score · Precision · MAE · ROC-AUC · Indice de Gini · Silhouette.\nComparaison visuelle des modèles.",
+    }
+    if section in info_map:
+        st.markdown(info_map[section])
+
+    st.markdown("---")
+    st.markdown('<div style="font-size:9px;color:#8a9bbf;letter-spacing:2px">PROJET STAT APPLIQUÉ IA · v5</div>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 #  HELPERS
@@ -149,13 +169,15 @@ if "last_reg" not in st.session_state:
     st.session_state.last_reg = None
 if "last_clf" not in st.session_state:
     st.session_state.last_clf = None
+if "last_metrics" not in st.session_state:
+    st.session_state.last_metrics = None
 
 df = st.session_state.df
 
 # ══════════════════════════════════════════════
 #  SECTION 0 — IMPORT
 # ══════════════════════════════════════════════
-if section == "📂 Import Dataset":
+if section == "📂 Import CSV":
     st.markdown('<div class="section-header">📂 IMPORT DATASET</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
 
@@ -326,7 +348,7 @@ elif section == "📊 Statistiques Descriptives":
 # ══════════════════════════════════════════════
 #  SECTION — TABLEAUX DE FRÉQUENCE
 # ══════════════════════════════════════════════
-elif section == "📋 Tableaux de Fréquence":
+elif section == "📋 Fréquence & Fréquence Cumulée":
     st.markdown('<div class="section-header">📋 TABLEAUX DE FRÉQUENCE & FRÉQUENCE CUMULÉE</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns([1, 2])
@@ -906,20 +928,34 @@ elif section == "🤖 Classification":
                     st.stop()
                 clf.fit(X_tr, y_tr)
                 y_pred_te = clf.predict(X_te)
-                acc  = accuracy_score(y_te, y_pred_te)
-                f1   = f1_score(y_te, y_pred_te, average="weighted", zero_division=0)
-                prec = precision_score(y_te, y_pred_te, average="weighted", zero_division=0)
-                mae  = mean_absolute_error(y_te, y_pred_te)
+                acc   = accuracy_score(y_te, y_pred_te)
+                f1    = f1_score(y_te, y_pred_te, average="weighted", zero_division=0)
+                prec  = precision_score(y_te, y_pred_te, average="weighted", zero_division=0)
+                rec   = recall_score(y_te, y_pred_te, average="weighted", zero_division=0)
+                mae   = mean_absolute_error(y_te, y_pred_te)
+                mcc   = matthews_corrcoef(y_te, y_pred_te)
                 try:
-                    auc_val = roc_auc_score(y_te, clf.predict_proba(X_te), multi_class="ovr", average="weighted") if hasattr(clf, "predict_proba") else 0.5
-                    gini = 2 * auc_val - 1
+                    proba_te = clf.predict_proba(X_te) if hasattr(clf, "predict_proba") else None
+                    auc_val  = roc_auc_score(y_te, proba_te, multi_class="ovr", average="weighted") if proba_te is not None else 0.5
+                    gini     = 2 * auc_val - 1
+                    ll       = log_loss(y_te, proba_te) if proba_te is not None else None
                 except:
-                    auc_val = 0.5; gini = 0
+                    auc_val = 0.5; gini = 0; ll = None
                 try:
                     sil_val = silhouette_score(X_scaled, y)
                 except:
                     sil_val = 0
-                cv   = cross_val_score(clf, X_scaled, y, cv=min(5, len(np.unique(y))), scoring="accuracy").mean()
+                cv = cross_val_score(clf, X_scaled, y, cv=min(5, len(np.unique(y))), scoring="accuracy").mean()
+
+                # Store all metrics in session state for Métriques page
+                st.session_state.last_metrics = {
+                    "model_name": model_name,
+                    "acc": acc, "cv": cv, "f1": f1, "prec": prec,
+                    "rec": rec, "mae": mae, "mcc": mcc,
+                    "auc_val": auc_val, "gini": gini,
+                    "ll": ll, "sil_val": sil_val,
+                    "classes": classes, "n_test": len(y_te)
+                }
 
                 # Stocker pour prédiction
                 st.session_state.last_clf = {
@@ -934,11 +970,19 @@ elif section == "🤖 Classification":
                 c3.metric("Classes", len(classes))
                 c4.metric("N test", len(y_te))
                 c5, c6, c7, c8 = st.columns(4)
-                c5.metric("F1-Score (weighted)", f"{f1:.4f}")
-                c6.metric("Precision (weighted)", f"{prec:.4f}")
-                c7.metric("MAE", f"{mae:.4f}")
-                c8.metric("Indice de Gini", f"{gini:.4f}")
-                st.info(f"ROC-AUC : **{auc_val:.4f}** · Silhouette : **{sil_val:.4f}**")
+                c5.metric("F1-Score", f"{f1:.4f}")
+                c6.metric("Precision", f"{prec:.4f}")
+                c7.metric("Recall", f"{rec:.4f}")
+                c8.metric("MAE", f"{mae:.4f}")
+                c9, c10, c11, c12 = st.columns(4)
+                c9.metric("ROC-AUC", f"{auc_val:.4f}")
+                c10.metric("Indice de Gini", f"{gini:.4f}")
+                c11.metric("MCC", f"{mcc:.4f}")
+                c12.metric("Silhouette", f"{sil_val:.4f}")
+                if ll is not None:
+                    st.info(f"Log-Loss : **{ll:.4f}**  ·  → Voir détails dans **📊 Métriques**")
+                else:
+                    st.info("→ Voir le tableau complet dans **📊 Métriques**")
 
                 st.text(classification_report(y_te, y_pred_te, target_names=[str(c) for c in classes]))
 
@@ -1188,6 +1232,121 @@ elif section == "🧪 Tests d'Hypothèse":
                         st.warning(f"⚠️ Pas de différence significative (p={p_mw:.4f})")
 
 
+
+# ══════════════════════════════════════════════
+#  SECTION — MÉTRIQUES
+# ══════════════════════════════════════════════
+elif section == "📊 Métriques":
+    st.markdown('<div class="section-header">📊 MÉTRIQUES & ÉVALUATION DES MODÈLES</div>', unsafe_allow_html=True)
+
+    # ── Résultats du dernier modèle ──
+    m = st.session_state.last_metrics
+    if m is not None:
+        st.markdown(f"### 🤖 Modèle entraîné : `{m['model_name']}`")
+        st.markdown(f"*{m['n_test']} observations de test · {len(m['classes'])} classes : {', '.join([str(c) for c in m['classes']])}*")
+        st.markdown("---")
+
+        # ── Row 1 : Accuracy & CV ──
+        st.markdown("#### 🎯 Performance Globale")
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        r1c1.metric("Accuracy (test)",  f"{m['acc']:.4f}",  delta=f"{m['acc']*100:.1f}%")
+        r1c2.metric("Accuracy (CV-5)",  f"{m['cv']:.4f}")
+        r1c3.metric("MCC",              f"{m['mcc']:.4f}",  help="Matthews Correlation Coefficient — robuste aux classes déséquilibrées")
+        r1c4.metric("Log-Loss",         f"{m['ll']:.4f}" if m['ll'] is not None else "N/A", help="Plus bas = meilleur. Pénalise les probabilités erronées")
+
+        st.markdown("#### 🔬 Précision / Rappel / F1")
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        r2c1.metric("F1-Score (weighted)",  f"{m['f1']:.4f}",  help="Moyenne harmonique Precision/Recall")
+        r2c2.metric("Precision (weighted)", f"{m['prec']:.4f}", help="TP / (TP+FP)")
+        r2c3.metric("Recall (weighted)",    f"{m['rec']:.4f}",  help="TP / (TP+FN)")
+        r2c4.metric("MAE",                  f"{m['mae']:.4f}",  help="Erreur absolue moyenne sur les étiquettes")
+
+        st.markdown("#### 📈 Discrimination & Clustering")
+        r3c1, r3c2, r3c3, _ = st.columns(4)
+        r3c1.metric("ROC-AUC",       f"{m['auc_val']:.4f}", help="Aire sous la courbe ROC — 0.5=aléatoire, 1=parfait")
+        r3c2.metric("Indice de Gini", f"{m['gini']:.4f}",   help="= 2×AUC−1 — pouvoir discriminant")
+        r3c3.metric("Silhouette",     f"{m['sil_val']:.4f}", help="Qualité de séparation des classes — [-1, 1]")
+
+        st.markdown("---")
+
+        # ── Visual bar chart of all metrics ──
+        st.markdown("#### 📊 Comparaison visuelle des métriques")
+        metric_names  = ["Accuracy", "CV-5", "F1", "Precision", "Recall", "ROC-AUC", "Gini", "Silhouette"]
+        metric_values = [m["acc"], m["cv"], m["f1"], m["prec"], m["rec"], m["auc_val"], max(0,m["gini"]), max(0,m["sil_val"])]
+        colors_bar = ["#1e8c00" if v >= 0.8 else "#cc7700" if v >= 0.65 else "#e8284a" for v in metric_values]
+
+        fig_m, ax_m = plt.subplots(figsize=(10, 4))
+        ax_m.set_facecolor("#f4f7ff")
+        bars_m = ax_m.bar(metric_names, metric_values, color=colors_bar, alpha=0.85, edgecolor="white", width=0.6)
+        for bar, val in zip(bars_m, metric_values):
+            ax_m.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.01,
+                      f"{val:.3f}", ha="center", fontsize=10, fontweight="bold", color="#1a2540")
+        ax_m.axhline(0.8,  color="#1e8c00", lw=1.5, linestyle="--", alpha=0.6, label="Seuil bon (0.80)")
+        ax_m.axhline(0.65, color="#cc7700", lw=1.5, linestyle="--", alpha=0.6, label="Seuil moyen (0.65)")
+        ax_m.set_ylim(0, 1.15)
+        ax_m.set_title(f"Toutes les métriques — {m['model_name']}", color="#0066cc", fontsize=12, fontweight="bold")
+        ax_m.legend(fontsize=9)
+        fig_to_st(fig_m)
+
+        # ── Tableau récapitulatif complet ──
+        st.markdown("#### 📋 Tableau récapitulatif")
+        recap_data = {
+            "Métrique": ["Accuracy", "Accuracy CV-5", "F1-Score", "Precision", "Recall",
+                         "MAE", "ROC-AUC", "Indice de Gini", "MCC", "Log-Loss", "Silhouette"],
+            "Valeur": [
+                f"{m['acc']:.4f}", f"{m['cv']:.4f}", f"{m['f1']:.4f}",
+                f"{m['prec']:.4f}", f"{m['rec']:.4f}", f"{m['mae']:.4f}",
+                f"{m['auc_val']:.4f}", f"{m['gini']:.4f}", f"{m['mcc']:.4f}",
+                f"{m['ll']:.4f}" if m['ll'] is not None else "N/A",
+                f"{m['sil_val']:.4f}"
+            ],
+            "Formule": [
+                "(TP+TN)/Total", "Moy. 5-folds", "2×(P×R)/(P+R)",
+                "TP/(TP+FP)", "TP/(TP+FN)", "Σ|y−ŷ|/n",
+                "∫ ROC curve", "2×AUC−1", "(TP×TN−FP×FN)/√...",
+                "−Σ y·log(p)", "(b−a)/max(a,b)"
+            ],
+            "Idéal": ["→ 1.0","→ 1.0","→ 1.0","→ 1.0","→ 1.0",
+                      "→ 0","→ 1.0","→ 1.0","→ 1.0","→ 0","→ 1.0"],
+            "Interprétation": [
+                "% prédictions correctes", "Généralisation (robuste)", "Équilibre P/R",
+                "Parmi prédits +, combien sont vrais", "Parmi vrais +, combien détectés",
+                "Erreur absolue moyenne", "Capacité à distinguer les classes",
+                "Pouvoir discriminant (0=aléatoire)", "Corrélation réel/prédit (classes déséquil.)",
+                "Pénalise probabilités erronées", "Séparation des classes"
+            ]
+        }
+        st.dataframe(pd.DataFrame(recap_data), use_container_width=True, hide_index=True)
+
+    else:
+        st.info("💡 **Entraînez d'abord un modèle** dans la section **🤖 Classification** pour afficher toutes les métriques ici.")
+
+    # ── Guide des métriques ──
+    st.markdown("---")
+    st.markdown("### 📐 Seuils d'interprétation")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("""<div style="background:#d6f5d6;border-radius:10px;padding:14px;text-align:center">
+            <div style="font-size:22px">✅</div>
+            <div style="font-weight:700;color:#1e8c00;font-size:14px">BON MODÈLE</div>
+            <div style="font-size:11px;color:#2d6a2d;margin-top:6px">
+            Accuracy > 0.80<br>F1 > 0.75<br>AUC > 0.80<br>Gini > 0.60<br>MCC > 0.60
+            </div></div>""", unsafe_allow_html=True)
+    with col2:
+        st.markdown("""<div style="background:#fff7d6;border-radius:10px;padding:14px;text-align:center">
+            <div style="font-size:22px">⚠️</div>
+            <div style="font-weight:700;color:#cc7700;font-size:14px">MODÈLE MOYEN</div>
+            <div style="font-size:11px;color:#7a5000;margin-top:6px">
+            Accuracy 0.65–0.80<br>F1 0.55–0.75<br>AUC 0.65–0.80<br>Gini 0.30–0.60<br>MCC 0.30–0.60
+            </div></div>""", unsafe_allow_html=True)
+    with col3:
+        st.markdown("""<div style="background:#fde8e8;border-radius:10px;padding:14px;text-align:center">
+            <div style="font-size:22px">❌</div>
+            <div style="font-weight:700;color:#e8284a;font-size:14px">MODÈLE FAIBLE</div>
+            <div style="font-size:11px;color:#8a1a2a;margin-top:6px">
+            Accuracy < 0.65<br>F1 < 0.55<br>AUC < 0.65<br>Gini < 0.30<br>MCC < 0.30
+            </div></div>""", unsafe_allow_html=True)
+
 # ══════════════════════════════════════════════
 #  SECTION 7 — GRAPHIQUES
 # ══════════════════════════════════════════════
@@ -1312,10 +1471,3 @@ elif section == "🎨 Graphiques":
             if fig is not None:
                 plt.tight_layout()
                 fig_to_st(fig)
-''
-
-with open('app.py', 'w', encoding='utf-8') as f:
-    f.write(app_code)
-
-print('✅ Fichier app.py créé avec succès !')
-print('📄 Taille :', len(app_code), 'caractères')

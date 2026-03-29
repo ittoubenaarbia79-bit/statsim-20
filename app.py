@@ -797,10 +797,16 @@ elif section == "🤖 Classification":
 
     with col2:
         if run_clf and x_clf:
-            sub = df[[y_clf] + x_clf].dropna()
+            # Éviter les colonnes dupliquées
+            cols_needed = [y_clf] + [c for c in x_clf if c != y_clf]
+            sub = df[cols_needed].dropna().copy()
+            # S'assurer que y est bien une Series 1D
+            y_series = sub[y_clf]
+            if isinstance(y_series, pd.DataFrame):
+                y_series = y_series.iloc[:, 0]
             le  = LabelEncoder()
-            y   = le.fit_transform(sub[y_clf].astype(str))
-            X   = sub[x_clf].values
+            y   = le.fit_transform(y_series.astype(str).values.ravel())
+            X   = sub[[c for c in x_clf if c != y_clf]].values
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
             classes = le.classes_

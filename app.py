@@ -764,8 +764,8 @@ elif section == "🤖 Classification":
     with col1:
         y_clf = st.selectbox("Variable cible (Classe)", df.columns.tolist())
         x_clf = st.multiselect("Features (variables explicatives)",
-                                df_num.columns.tolist(),
-                                default=df_num.columns.tolist()[:3])
+                                [c for c in df_num.columns if c != y_clf],
+                                default=[c for c in df_num.columns if c != y_clf][:3])
         model_name = st.selectbox("Modèle", [
             "K-Nearest Neighbors (KNN)",
             "Naive Bayes (Gaussien)",
@@ -784,7 +784,7 @@ elif section == "🤖 Classification":
             kernel = st.selectbox("Noyau SVM", ["rbf", "linear", "poly"])
             C_svm  = st.slider("Paramètre C", 0.1, 10.0, 1.0)
         elif "Random Forest" in model_name:
-            n_trees = st.slider("Nombre d'arbres", 10, 200, 100)
+            n_trees      = st.slider("Nombre d'arbres", 10, 200, 100)
             max_depth_rf = st.slider("Profondeur max", 2, 20, 5)
         elif "Arbre" in model_name:
             max_depth_dt = st.slider("Profondeur max", 2, 20, 5)
@@ -797,446 +797,341 @@ elif section == "🤖 Classification":
 
     with col2:
         if run_clf and x_clf:
-            # Éviter les colonnes dupliquées
-            cols_needed = [y_clf] + [c for c in x_clf if c != y_clf]
-            sub = df[cols_needed].dropna().copy()
-            # S'assurer que y est bien une Series 1D
-            y_series = sub[y_clf]
-            if isinstance(y_series, pd.DataFrame):
-                y_series = y_series.iloc[:, 0]
-            le  = LabelEncoder()
-            y   = le.fit_transform(y_series.astype(str).values.ravel())
-            X   = sub[[c for c in x_clf if c != y_clf]].values
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            classes = le.classes_
+            try:
+                # ── Préparation des données ──
+                features = [c for c in x_clf if c != y_clf]
+                if not features:
+                    st.error("Les features ne peuvent pas être identiques à la variable cible.")
+                    st.stop()
 
-            is_facto = "ACP" in model_name or "ACM" in model_name
+                cols_needed = [y_clf] + features
+                sub = df[cols_needed].dropna().copy()
 
-            if is_facto:
-                # ── ACP / ACM ──
-                nc = n_comp if "ACP" in model_name else 2
-                pca = PCA(n_components=min(nc, X_scaled.shape[1]))
-                X_pca = pca.fit_transform(X_scaled)
-                explained = pca.explained_variance_ratio_ * 100
+                if len(sub) < 10:
+                    st.error("Pas assez de données après suppression des valeurs manquantes (minimum 10 lignes).")
+                    st.stop()
 
-                st.markdown(f"**{model_name}**")
-                # Tableau inertie
-                inertia_df = pd.DataFrame({
-                    "Composante": [f"PC{i+1}" for i in range(len(explained))],
-                    "Valeur propre": pca.explained_variance_,
-                    "Variance (%)": explained,
-                    "Cumul (%)": np.cumsum(explained)
-                })
-                st.dataframe(inertia_df.style.format({"Valeur propre":"{:.3f}","Variance (%)":"{:.1f}","Cumul (%)":"{:.1f}"}),
-                             use_container_width=True)
+                # Encoder y → 1D obligatoire
+                y_raw = sub[y_clf]
+                if isinstance(y_raw, pd.DataFrame):
+                    y_raw = y_raw.iloc[:, 0]
+                le = LabelEncoder()
+                y  = le.fit_transform(y_raw.astype(str).values.ravel())
+                classes = le.classes_
 
-                fig, axes = plt.subplots(1, 2, figsize=(13, 4))
-                # Scree plot
-                axes[0].set_facecolor("#f4f7ff")
-                axes[0].bar(range(1, len(explained)+1), explained,
-                             color=PALETTE[:len(explained)], alpha=0.8, edgecolor="white")
-                axes[0].plot(range(1, len(explained)+1), np.cumsum(explained),
-                              "o-", color="#e8284a", lw=2, label="Cumul")
-                axes[0].axhline(70, color="#1e8c00", lw=1.5, linestyle="--", label="Seuil 70%")
-                axes[0].set_xlabel("Composante"); axes[0].set_ylabel("Variance expliquée (%)")
-                axes[0].set_title("Scree Plot", color="#0066cc", fontsize=11)
-                axes[0].legend(fontsize=9)
-                # Plan factoriel
-                axes[1].set_facecolor("#f4f7ff")
-                for i, cls in enumerate(np.unique(y)):
-                    mask = y == cls
-                    axes[1].scatter(X_pca[mask, 0], X_pca[mask, 1] if X_pca.shape[1]>1 else np.zeros(mask.sum()),
-                                     color=PALETTE[i%len(PALETTE)], alpha=0.6, s=30, label=classes[cls])
-                axes[1].set_xlabel(f"PC1 ({explained[0]:.1f}%)")
-                axes[1].set_ylabel(f"PC2 ({explained[1]:.1f}%)" if len(explained)>1 else "PC2")
-                axes[1].set_title("Plan factoriel PC1 × PC2", color="#7c3aed", fontsize=11)
-                axes[1].legend(fontsize=9)
-                plt.tight_layout()
-                fig_to_st(fig)
+                # Encoder X (gérer les colonnes catégorielles si présentes)
+                X_raw = sub[features]
+                # Encoder les colonnes non-numériques dans X
+                X_encoded = pd.get_dummies(X_raw, drop_first=True).values.astype(float)
 
-                # Cercle des corrélations
-                if X_scaled.shape[1] >= 2:
-                    loadings = pca.components_.T
-                    fig2, ax2 = plt.subplots(figsize=(5, 5))
-                    ax2.set_facecolor("#f4f7ff")
-                    circle = plt.Circle((0,0), 1, fill=False, color="#d0daf0", lw=1.5)
-                    ax2.add_patch(circle)
-                    for i, feat in enumerate(x_clf):
-                        ax2.annotate("", xy=(loadings[i,0], loadings[i,1] if loadings.shape[1]>1 else 0),
-                                      xytext=(0,0),
-                                      arrowprops=dict(arrowstyle="->", color=PALETTE[i%len(PALETTE)], lw=2))
-                        ax2.text(loadings[i,0]*1.12, (loadings[i,1] if loadings.shape[1]>1 else 0)*1.12,
-                                  feat, fontsize=9, color=PALETTE[i%len(PALETTE)])
-                    ax2.set_xlim(-1.2, 1.2); ax2.set_ylim(-1.2, 1.2)
-                    ax2.axhline(0, color="#d0daf0", lw=0.8)
-                    ax2.axvline(0, color="#d0daf0", lw=0.8)
-                    ax2.set_xlabel(f"PC1 ({explained[0]:.1f}%)"); ax2.set_ylabel(f"PC2 ({explained[1]:.1f}%)" if len(explained)>1 else "PC2")
-                    ax2.set_title("Cercle des corrélations", color="#7c3aed", fontsize=11)
-                    fig_to_st(fig2)
+                scaler   = StandardScaler()
+                X_scaled = scaler.fit_transform(X_encoded)
 
-                # Pas de prédiction pour ACP/ACM
-                st.session_state.last_clf = None
+                is_facto = "ACP" in model_name or "ACM" in model_name
 
-            else:
-                # ── Modèles supervisés ──
-                X_tr, X_te, y_tr, y_te = train_test_split(
-                    X_scaled, y, test_size=test_size/100, random_state=42, stratify=y)
+                # ══════════════════════════════════════
+                #  ACP / ACM
+                # ══════════════════════════════════════
+                if is_facto:
+                    nc  = n_comp if "ACP" in model_name else 2
+                    nc  = min(nc, X_scaled.shape[1], X_scaled.shape[0] - 1)
+                    pca = PCA(n_components=nc)
+                    X_pca     = pca.fit_transform(X_scaled)
+                    explained = pca.explained_variance_ratio_ * 100
 
-                if "KNN" in model_name:
-                    clf = KNeighborsClassifier(n_neighbors=k_knn)
-                elif "Naive" in model_name:
-                    clf = GaussianNB()
-                elif "Logistique" in model_name:
-                    clf = LogisticRegression(max_iter=500)
-                elif "Random Forest" in model_name:
-                    clf = RandomForestClassifier(n_estimators=n_trees, max_depth=max_depth_rf, random_state=42)
-                elif "Arbre" in model_name:
-                    clf = DecisionTreeClassifier(max_depth=max_depth_dt, random_state=42)
+                    st.markdown(f"**{model_name}**")
+                    inertia_df = pd.DataFrame({
+                        "Composante":   [f"PC{i+1}" for i in range(len(explained))],
+                        "Valeur propre": pca.explained_variance_,
+                        "Variance (%)":  explained,
+                        "Cumul (%)":     np.cumsum(explained)
+                    })
+                    st.dataframe(inertia_df.style.format({
+                        "Valeur propre": "{:.3f}", "Variance (%)": "{:.1f}", "Cumul (%)": "{:.1f}"
+                    }), use_container_width=True)
+
+                    fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+                    # Scree plot
+                    axes[0].set_facecolor("#f4f7ff")
+                    axes[0].bar(range(1, len(explained)+1), explained,
+                                color=PALETTE[:len(explained)], alpha=0.8, edgecolor="white")
+                    axes[0].plot(range(1, len(explained)+1), np.cumsum(explained),
+                                 "o-", color="#e8284a", lw=2, label="Cumul")
+                    axes[0].axhline(70, color="#1e8c00", lw=1.5, linestyle="--", label="Seuil 70%")
+                    axes[0].set_xlabel("Composante"); axes[0].set_ylabel("Variance expliquée (%)")
+                    axes[0].set_title("Scree Plot", color="#0066cc", fontsize=11)
+                    axes[0].legend(fontsize=9)
+                    # Plan factoriel
+                    axes[1].set_facecolor("#f4f7ff")
+                    for i, cls in enumerate(np.unique(y)):
+                        mask = y == cls
+                        xvals = X_pca[mask, 0]
+                        yvals = X_pca[mask, 1] if X_pca.shape[1] > 1 else np.zeros(mask.sum())
+                        axes[1].scatter(xvals, yvals, color=PALETTE[i % len(PALETTE)],
+                                        alpha=0.6, s=30, label=str(classes[cls]) if cls < len(classes) else str(cls))
+                    axes[1].set_xlabel(f"PC1 ({explained[0]:.1f}%)")
+                    axes[1].set_ylabel(f"PC2 ({explained[1]:.1f}%)" if len(explained) > 1 else "PC2")
+                    axes[1].set_title("Plan factoriel PC1 × PC2", color="#7c3aed", fontsize=11)
+                    axes[1].legend(fontsize=9)
+                    plt.tight_layout()
+                    fig_to_st(fig)
+
+                    # Cercle des corrélations
+                    if X_scaled.shape[1] >= 2 and nc >= 2:
+                        loadings     = pca.components_.T   # (n_features, n_components)
+                        n_feat_load  = loadings.shape[0]
+                        feat_labels  = pd.get_dummies(X_raw, drop_first=True).columns.tolist()
+                        feat_labels  = feat_labels[:n_feat_load]
+
+                        fig2, ax2 = plt.subplots(figsize=(5, 5))
+                        ax2.set_facecolor("#f4f7ff")
+                        ax2.add_patch(plt.Circle((0, 0), 1, fill=False, color="#d0daf0", lw=1.5))
+                        for i, feat in enumerate(feat_labels):
+                            lx = float(loadings[i, 0])
+                            ly = float(loadings[i, 1]) if loadings.shape[1] > 1 else 0.0
+                            ax2.annotate("", xy=(lx, ly), xytext=(0, 0),
+                                         arrowprops=dict(arrowstyle="->", color=PALETTE[i % len(PALETTE)], lw=2))
+                            ax2.text(lx * 1.12, ly * 1.12, feat, fontsize=8, color=PALETTE[i % len(PALETTE)])
+                        ax2.set_xlim(-1.3, 1.3); ax2.set_ylim(-1.3, 1.3)
+                        ax2.axhline(0, color="#d0daf0", lw=0.8)
+                        ax2.axvline(0, color="#d0daf0", lw=0.8)
+                        ax2.set_xlabel(f"PC1 ({explained[0]:.1f}%)")
+                        ax2.set_ylabel(f"PC2 ({explained[1]:.1f}%)" if len(explained) > 1 else "PC2")
+                        ax2.set_title("Cercle des corrélations", color="#7c3aed", fontsize=11)
+                        fig_to_st(fig2)
+
+                    st.session_state.last_clf     = None
+                    st.session_state.last_metrics = None
+
+                # ══════════════════════════════════════
+                #  K-MEANS
+                # ══════════════════════════════════════
                 elif "K-Means" in model_name:
-                    km = KMeans(n_clusters=k_means, random_state=42, n_init=10)
+                    km     = KMeans(n_clusters=k_means, random_state=42, n_init=10)
                     km.fit(X_scaled)
-                    labels = km.labels_
-                    sil = silhouette_score(X_scaled, labels) if len(np.unique(labels)) > 1 else 0
+                    labels  = km.labels_
                     inertia = km.inertia_
+                    sil     = silhouette_score(X_scaled, labels) if len(np.unique(labels)) > 1 else 0.0
+
                     c_km1, c_km2 = st.columns(2)
-                    c_km1.metric("Inertie (WSS)", f"{inertia:.2f}")
-                    c_km2.metric("Score Silhouette", f"{sil:.4f}")
-                    from sklearn.decomposition import PCA as PCA2
-                    pca_km = PCA2(n_components=2)
-                    X_2d = pca_km.fit_transform(X_scaled)
+                    c_km1.metric("Inertie (WSS)",     f"{inertia:.2f}")
+                    c_km2.metric("Score Silhouette",  f"{sil:.4f}")
+
+                    pca_km = PCA(n_components=min(2, X_scaled.shape[1]))
+                    X_2d   = pca_km.fit_transform(X_scaled)
+
                     fig_km, axes_km = plt.subplots(1, 2, figsize=(12, 4))
                     axes_km[0].set_facecolor("#f4f7ff")
                     for k_i in range(k_means):
                         mask_k = labels == k_i
-                        axes_km[0].scatter(X_2d[mask_k, 0], X_2d[mask_k, 1],
-                                      color=PALETTE[k_i % len(PALETTE)], alpha=0.6, s=30,
-                                      label=f"Cluster {k_i+1}")
+                        xv = X_2d[mask_k, 0]
+                        yv = X_2d[mask_k, 1] if X_2d.shape[1] > 1 else np.zeros(mask_k.sum())
+                        axes_km[0].scatter(xv, yv, color=PALETTE[k_i % len(PALETTE)],
+                                           alpha=0.6, s=30, label=f"Cluster {k_i+1}")
                     axes_km[0].set_title(f"K-Means (k={k_means}) — Plan PCA", color="#0066cc", fontsize=12)
                     axes_km[0].legend(fontsize=9)
+
                     inertias = []
-                    ks = range(2, min(11, len(X_scaled)))
-                    for ki in ks:
+                    k_range  = range(2, min(11, len(X_scaled)))
+                    for ki in k_range:
                         inertias.append(KMeans(n_clusters=ki, random_state=42, n_init=10).fit(X_scaled).inertia_)
                     axes_km[1].set_facecolor("#f4f7ff")
-                    axes_km[1].plot(list(ks), inertias, "o-", color="#0066cc", lw=2)
+                    axes_km[1].plot(list(k_range), inertias, "o-", color="#0066cc", lw=2)
                     axes_km[1].axvline(k_means, color="#e8284a", lw=2, linestyle="--", label=f"k={k_means} choisi")
                     axes_km[1].set_xlabel("Nombre de clusters K"); axes_km[1].set_ylabel("Inertie")
                     axes_km[1].set_title("Méthode du coude (Elbow)", color="#0066cc", fontsize=11)
                     axes_km[1].legend()
-                    plt.tight_layout(); fig_to_st(fig_km)
-                    st.session_state.last_clf = None
-                    clf = None
-                else:  # SVM
-                    clf = SVC(kernel=kernel, C=C_svm, probability=True)
+                    plt.tight_layout()
+                    fig_to_st(fig_km)
 
-                if clf is None:
-                    st.stop()
-                clf.fit(X_tr, y_tr)
-                y_pred_te = clf.predict(X_te)
-                acc   = accuracy_score(y_te, y_pred_te)
-                f1    = f1_score(y_te, y_pred_te, average="weighted", zero_division=0)
-                prec  = precision_score(y_te, y_pred_te, average="weighted", zero_division=0)
-                rec   = recall_score(y_te, y_pred_te, average="weighted", zero_division=0)
-                mae   = mean_absolute_error(y_te, y_pred_te)
-                mcc   = matthews_corrcoef(y_te, y_pred_te)
-                try:
-                    proba_te = clf.predict_proba(X_te) if hasattr(clf, "predict_proba") else None
-                    auc_val  = roc_auc_score(y_te, proba_te, multi_class="ovr", average="weighted") if proba_te is not None else 0.5
-                    gini     = 2 * auc_val - 1
-                    ll       = log_loss(y_te, proba_te) if proba_te is not None else None
-                except:
-                    auc_val = 0.5; gini = 0; ll = None
-                try:
-                    sil_val = silhouette_score(X_scaled, y)
-                except:
-                    sil_val = 0
-                cv = cross_val_score(clf, X_scaled, y, cv=min(5, len(np.unique(y))), scoring="accuracy").mean()
+                    st.session_state.last_clf     = None
+                    st.session_state.last_metrics = None
 
-                # Store all metrics in session state for Métriques page
-                st.session_state.last_metrics = {
-                    "model_name": model_name,
-                    "acc": acc, "cv": cv, "f1": f1, "prec": prec,
-                    "rec": rec, "mae": mae, "mcc": mcc,
-                    "auc_val": auc_val, "gini": gini,
-                    "ll": ll, "sil_val": sil_val,
-                    "classes": classes, "n_test": len(y_te)
-                }
-
-                # Stocker pour prédiction
-                st.session_state.last_clf = {
-                    "clf": clf, "scaler": scaler, "le": le,
-                    "x_clf": x_clf, "y_clf": y_clf,
-                    "classes": classes, "model_name": model_name
-                }
-
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Accuracy (test)", f"{acc:.4f}", delta=f"{acc*100:.1f}%")
-                c2.metric("Accuracy (CV-5)", f"{cv:.4f}")
-                c3.metric("Classes", len(classes))
-                c4.metric("N test", len(y_te))
-                c5, c6, c7, c8 = st.columns(4)
-                c5.metric("F1-Score", f"{f1:.4f}")
-                c6.metric("Precision", f"{prec:.4f}")
-                c7.metric("Recall", f"{rec:.4f}")
-                c8.metric("MAE", f"{mae:.4f}")
-                c9, c10, c11, c12 = st.columns(4)
-                c9.metric("ROC-AUC", f"{auc_val:.4f}")
-                c10.metric("Indice de Gini", f"{gini:.4f}")
-                c11.metric("MCC", f"{mcc:.4f}")
-                c12.metric("Silhouette", f"{sil_val:.4f}")
-                if ll is not None:
-                    st.info(f"Log-Loss : **{ll:.4f}**  ·  → Voir détails dans **📊 Métriques**")
+                # ══════════════════════════════════════
+                #  MODÈLES SUPERVISÉS
+                # ══════════════════════════════════════
                 else:
-                    st.info("→ Voir le tableau complet dans **📊 Métriques**")
+                    n_classes = len(np.unique(y))
+                    if n_classes < 2:
+                        st.error("La variable cible doit avoir au moins 2 classes distinctes.")
+                        st.stop()
 
-                st.text(classification_report(y_te, y_pred_te, target_names=[str(c) for c in classes]))
+                    X_tr, X_te, y_tr, y_te = train_test_split(
+                        X_scaled, y, test_size=test_size / 100,
+                        random_state=42,
+                        stratify=y if np.min(np.bincount(y)) >= 2 else None
+                    )
 
-                fig, axes = plt.subplots(1, 3, figsize=(16, 4))
-                # Matrice de confusion
-                cm = confusion_matrix(y_te, y_pred_te)
-                sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axes[0],
-                             xticklabels=[str(c) for c in classes],
-                             yticklabels=[str(c) for c in classes],
-                             linewidths=0.5, linecolor="white", annot_kws={"size":11})
-                axes[0].set_title(f"Matrice de Confusion\n{model_name}", color="#7c3aed", fontsize=11)
-                axes[0].set_ylabel("Réel"); axes[0].set_xlabel("Prédit")
-                # Accuracy bar
-                axes[1].set_facecolor("#f4f7ff")
-                axes[1].bar(["Test", "CV-5"], [acc, cv], color=[PALETTE[0], PALETTE[2]], alpha=0.85, edgecolor="white")
-                axes[1].set_ylim(0, 1.1)
-                for xi, val in enumerate([acc, cv]):
-                    axes[1].text(xi, val+0.03, f"{val:.3f}", ha="center", fontsize=11, fontweight="bold")
-                axes[1].axhline(0.5, color="#e8284a", lw=1.5, linestyle="--", alpha=0.6, label="50%")
-                axes[1].set_title("Accuracy", color="#0066cc", fontsize=11)
-                axes[1].legend(fontsize=9)
-                # Importance features
-                if hasattr(clf, "feature_importances_"):
-                    importances = clf.feature_importances_
-                    imp_label = "Importance (RF/DT Gini)"
-                else:
-                    importances = [abs(np.corrcoef(X_scaled[:,i], y)[0,1]) for i in range(len(x_clf))]
-                    imp_label = "Importance des Features (|corr|)"
-                axes[2].set_facecolor("#f4f7ff")
-                bars2 = axes[2].barh(x_clf, importances, color=PALETTE[:len(x_clf)], alpha=0.85, edgecolor="white")
-                for bar, val in zip(bars2, importances):
-                    axes[2].text(bar.get_width()+0.005, bar.get_y()+bar.get_height()/2,
-                                  f"{val:.3f}", va="center", fontsize=9)
-                axes[2].set_title(imp_label, color="#1e8c00", fontsize=11)
-                plt.tight_layout()
-                fig_to_st(fig)
+                    if "KNN" in model_name:
+                        clf = KNeighborsClassifier(n_neighbors=min(k_knn, len(X_tr) - 1))
+                    elif "Naive" in model_name:
+                        clf = GaussianNB()
+                    elif "Logistique" in model_name:
+                        clf = LogisticRegression(max_iter=1000, solver="lbfgs", multi_class="auto")
+                    elif "Random Forest" in model_name:
+                        clf = RandomForestClassifier(n_estimators=n_trees, max_depth=max_depth_rf, random_state=42)
+                    elif "Arbre" in model_name:
+                        clf = DecisionTreeClassifier(max_depth=max_depth_dt, random_state=42)
+                    else:  # SVM
+                        clf = SVC(kernel=kernel, C=C_svm, probability=True)
+
+                    clf.fit(X_tr, y_tr)
+                    y_pred_te = clf.predict(X_te)
+
+                    acc  = accuracy_score(y_te, y_pred_te)
+                    f1   = f1_score(y_te, y_pred_te, average="weighted", zero_division=0)
+                    prec = precision_score(y_te, y_pred_te, average="weighted", zero_division=0)
+                    rec  = recall_score(y_te, y_pred_te, average="weighted", zero_division=0)
+                    mae  = mean_absolute_error(y_te, y_pred_te)
+                    mcc  = matthews_corrcoef(y_te, y_pred_te)
+                    cv   = cross_val_score(clf, X_scaled, y,
+                                           cv=min(5, np.min(np.bincount(y))),
+                                           scoring="accuracy").mean()
+                    try:
+                        proba_te = clf.predict_proba(X_te) if hasattr(clf, "predict_proba") else None
+                        auc_val  = roc_auc_score(y_te, proba_te,
+                                                  multi_class="ovr", average="weighted") if proba_te is not None else 0.5
+                        gini     = 2 * auc_val - 1
+                        ll       = log_loss(y_te, proba_te) if proba_te is not None else None
+                    except Exception:
+                        auc_val = 0.5; gini = 0.0; ll = None
+                    try:
+                        sil_val = silhouette_score(X_scaled, y)
+                    except Exception:
+                        sil_val = 0.0
+
+                    # Stocker pour page Métriques
+                    st.session_state.last_clf = {
+                        "clf": clf, "scaler": scaler, "le": le,
+                        "x_clf": features, "y_clf": y_clf,
+                        "classes": classes, "model_name": model_name,
+                        "X_encoded_cols": pd.get_dummies(X_raw, drop_first=True).columns.tolist()
+                    }
+                    st.session_state.last_metrics = {
+                        "model_name": model_name,
+                        "acc": acc, "cv": cv, "f1": f1, "prec": prec,
+                        "rec": rec, "mae": mae, "mcc": mcc,
+                        "auc_val": auc_val, "gini": gini,
+                        "ll": ll, "sil_val": sil_val,
+                        "classes": classes, "n_test": len(y_te)
+                    }
+
+                    # ── Métriques ──
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Accuracy (test)",  f"{acc:.4f}", delta=f"{acc*100:.1f}%")
+                    c2.metric("Accuracy (CV-5)",  f"{cv:.4f}")
+                    c3.metric("Classes",          len(classes))
+                    c4.metric("N test",           len(y_te))
+                    c5, c6, c7, c8 = st.columns(4)
+                    c5.metric("F1-Score",   f"{f1:.4f}")
+                    c6.metric("Precision",  f"{prec:.4f}")
+                    c7.metric("Recall",     f"{rec:.4f}")
+                    c8.metric("MAE",        f"{mae:.4f}")
+                    c9, c10, c11, c12 = st.columns(4)
+                    c9.metric("ROC-AUC",        f"{auc_val:.4f}")
+                    c10.metric("Indice de Gini", f"{gini:.4f}")
+                    c11.metric("MCC",            f"{mcc:.4f}")
+                    c12.metric("Silhouette",     f"{sil_val:.4f}")
+                    if ll is not None:
+                        st.info(f"Log-Loss : **{ll:.4f}**  ·  → Voir détails dans **📊 Métriques**")
+
+                    st.text(classification_report(y_te, y_pred_te,
+                                                   target_names=[str(c) for c in classes]))
+
+                    # ── Graphiques ──
+                    fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+                    # Matrice de confusion
+                    cm = confusion_matrix(y_te, y_pred_te)
+                    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axes[0],
+                                xticklabels=[str(c) for c in classes],
+                                yticklabels=[str(c) for c in classes],
+                                linewidths=0.5, linecolor="white", annot_kws={"size": 11})
+                    axes[0].set_title(f"Matrice de Confusion\n{model_name}", color="#7c3aed", fontsize=11)
+                    axes[0].set_ylabel("Réel"); axes[0].set_xlabel("Prédit")
+                    # Accuracy bar
+                    axes[1].set_facecolor("#f4f7ff")
+                    axes[1].bar(["Test", "CV-5"], [acc, cv],
+                                color=[PALETTE[0], PALETTE[2]], alpha=0.85, edgecolor="white")
+                    axes[1].set_ylim(0, 1.1)
+                    for xi, val in enumerate([acc, cv]):
+                        axes[1].text(xi, val + 0.03, f"{val:.3f}", ha="center",
+                                     fontsize=11, fontweight="bold")
+                    axes[1].axhline(0.5, color="#e8284a", lw=1.5, linestyle="--", alpha=0.6, label="50%")
+                    axes[1].set_title("Accuracy", color="#0066cc", fontsize=11)
+                    axes[1].legend(fontsize=9)
+                    # Importance features
+                    if hasattr(clf, "feature_importances_"):
+                        importances = clf.feature_importances_
+                        imp_label   = "Importance (Gini)"
+                        feat_names  = pd.get_dummies(X_raw, drop_first=True).columns.tolist()
+                    else:
+                        importances = [abs(np.corrcoef(X_scaled[:, i], y)[0, 1]) for i in range(X_scaled.shape[1])]
+                        imp_label   = "Importance (|corr|)"
+                        feat_names  = pd.get_dummies(X_raw, drop_first=True).columns.tolist()
+                    axes[2].set_facecolor("#f4f7ff")
+                    bars2 = axes[2].barh(feat_names[:len(importances)], importances,
+                                         color=PALETTE[:len(importances)], alpha=0.85, edgecolor="white")
+                    for bar, val in zip(bars2, importances):
+                        axes[2].text(bar.get_width() + 0.005, bar.get_y() + bar.get_height() / 2,
+                                     f"{val:.3f}", va="center", fontsize=9)
+                    axes[2].set_title(imp_label, color="#1e8c00", fontsize=11)
+                    plt.tight_layout()
+                    fig_to_st(fig)
+
+            except Exception as e:
+                st.error(f"❌ Erreur : {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
         elif run_clf:
-            st.warning("Sélectionnez au moins une feature")
+            st.warning("⚠️ Sélectionnez au moins une feature")
 
-    # ─── PRÉDICTION CLASSIFICATION ───
+    # ── PRÉDICTION CLASSIFICATION ──
     if st.session_state.last_clf is not None:
         st.markdown("---")
         st.markdown("### 🔮 Prédiction sur Nouvelles Données")
-        st.markdown("Saisissez les valeurs des features pour prédire la classe en temps réel :")
-        clf_info = st.session_state.last_clf
-        pred_cols2 = st.columns(len(clf_info["x_clf"]))
+        clf_info   = st.session_state.last_clf
+        pred_cols2 = st.columns(min(len(clf_info["x_clf"]), 6))
         pred_inputs2 = {}
         for i, xv in enumerate(clf_info["x_clf"]):
-            mean_v = float(df[xv].mean()) if xv in df.columns else 0.0
-            pred_inputs2[xv] = pred_cols2[i].number_input(
+            mean_v = float(df[xv].mean()) if xv in df.columns and pd.api.types.is_numeric_dtype(df[xv]) else 0.0
+            pred_inputs2[xv] = pred_cols2[i % len(pred_cols2)].number_input(
                 xv, value=round(mean_v, 2), key=f"clf_pred_{xv}"
             )
         if st.button("🔮 PRÉDIRE LA CLASSE", key="btn_pred_clf"):
-            X_new2 = np.array([[pred_inputs2[xv] for xv in clf_info["x_clf"]]])
-            X_new2_scaled = clf_info["scaler"].transform(X_new2)
-            pred_class_idx = clf_info["clf"].predict(X_new2_scaled)[0]
-            pred_class = clf_info["le"].inverse_transform([pred_class_idx])[0]
-            # Probabilités
             try:
-                probs = clf_info["clf"].predict_proba(X_new2_scaled)[0]
-                has_proba = True
-            except:
-                probs = np.zeros(len(clf_info["classes"]))
-                probs[pred_class_idx] = 1.0
-                has_proba = False
+                X_new2        = np.array([[pred_inputs2[xv] for xv in clf_info["x_clf"]]])
+                X_new2_scaled = clf_info["scaler"].transform(X_new2)
+                pred_idx      = clf_info["clf"].predict(X_new2_scaled)[0]
+                pred_class    = clf_info["le"].inverse_transform([pred_idx])[0]
+                try:
+                    probs    = clf_info["clf"].predict_proba(X_new2_scaled)[0]
+                    has_prob = True
+                except Exception:
+                    probs    = np.zeros(len(clf_info["classes"]))
+                    probs[pred_idx] = 1.0
+                    has_prob = False
 
-            st.markdown(f"""
-            <div class="pred-result-clf">
-                <div style="font-size:11px;color:#5a6a8a;letter-spacing:2px;margin-bottom:4px">CLASSE PRÉDITE</div>
-                <div style="font-family:Rajdhani,sans-serif;font-size:36px;font-weight:700;color:#7c3aed">{pred_class}</div>
-                <div style="font-size:10px;color:#8a9bbf;margin-top:4px">Confiance : {max(probs)*100:.1f}%  ·  Modèle : {clf_info["model_name"]}</div>
-            </div>""", unsafe_allow_html=True)
-
-            # Barres de probabilité
-            st.markdown("**Probabilités par classe :**")
-            for cls, prob in sorted(zip(clf_info["classes"], probs), key=lambda x: -x[1]):
-                color = "#7c3aed" if cls == pred_class else "#d0daf0"
                 st.markdown(f"""
-                <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-                    <div style="font-size:11px;min-width:90px;font-weight:{'700' if cls==pred_class else '400'};color:{'#7c3aed' if cls==pred_class else '#5a6a8a'}">{cls}</div>
-                    <div style="flex:1;height:12px;background:#f0f0f0;border-radius:6px;overflow:hidden">
-                        <div style="width:{prob*100:.1f}%;height:100%;background:{color};border-radius:6px"></div>
-                    </div>
-                    <div style="font-size:11px;min-width:45px;font-weight:700;color:{'#7c3aed' if cls==pred_class else '#8a9bbf'}">{prob*100:.1f}%</div>
+                <div class="pred-result-clf">
+                    <div style="font-size:11px;color:#5a6a8a;letter-spacing:2px;margin-bottom:4px">CLASSE PRÉDITE</div>
+                    <div style="font-family:Rajdhani,sans-serif;font-size:36px;font-weight:700;color:#7c3aed">{pred_class}</div>
+                    <div style="font-size:10px;color:#8a9bbf;margin-top:4px">Confiance : {max(probs)*100:.1f}%  ·  Modèle : {clf_info["model_name"]}</div>
                 </div>""", unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════
-#  SECTION — TESTS D'HYPOTHÈSE
-# ══════════════════════════════════════════════
-elif section == "🧪 Tests d'Hypothèse":
-    st.markdown('<div class="section-header">🧪 TESTS D\'HYPOTHÈSE — PASSAGE STAT → PROBA</div>', unsafe_allow_html=True)
-    df_num = df.select_dtypes(include=[np.number])
-
-    test_type = st.selectbox("Type de test", [
-        "Test t de Student (1 échantillon)",
-        "Test t de Student (2 échantillons)",
-        "Test de Shapiro-Wilk (Normalité)",
-        "Test de Kolmogorov-Smirnov",
-        "Test du Chi-Deux (indépendance)",
-        "Test de Mann-Whitney (non-paramétrique)"
-    ])
-    st.markdown("---")
-
-    if test_type == "Test t de Student (1 échantillon)":
-        col1, col2 = st.columns(2)
-        with col1:
-            var_t = st.selectbox("Variable", df_num.columns.tolist())
-            mu0   = st.number_input("Valeur de référence μ₀", value=float(df_num[var_t].mean()))
-            alpha = st.selectbox("Niveau de signification α", [0.01, 0.05, 0.10], index=1)
-            run_t = st.button("▶ CALCULER", use_container_width=True)
-        with col2:
-            if run_t:
-                data_t = df_num[var_t].dropna()
-                t_stat, p_val = stats.ttest_1samp(data_t, mu0)
-                df_t = len(data_t) - 1
-                t_crit = stats.t.ppf(1 - alpha/2, df=df_t)
-                col_a, col_b, col_c = st.columns(3)
-                col_a.metric("t-statistique", f"{t_stat:.4f}")
-                col_b.metric("p-valeur", f"{p_val:.4f}")
-                col_c.metric("t critique (±α/2)", f"{t_crit:.4f}")
-                if p_val < alpha:
-                    st.success(f"✅ H₀ rejetée : différence significative à α={alpha} (p={p_val:.4f})")
-                else:
-                    st.warning(f"⚠️ H₀ non rejetée à α={alpha} (p={p_val:.4f})")
-                st.info(f"H₀ : μ = {mu0}  |  H₁ : μ ≠ {mu0}  |  ddl = {df_t}")
-                fig_t, ax_t = plt.subplots(figsize=(8, 4))
-                ax_t.set_facecolor("#f4f7ff")
-                x_range = np.linspace(-5, 5, 500)
-                ax_t.plot(x_range, stats.t.pdf(x_range, df=df_t), color="#0066cc", lw=2.5, label=f"t(ddl={df_t})")
-                ax_t.axvline(t_stat, color="#e8284a", lw=2.5, label=f"t obs = {t_stat:.3f}")
-                ax_t.axvline( t_crit, color="#1e8c00", lw=2, linestyle="--", label=f"t crit = ±{t_crit:.3f}")
-                ax_t.axvline(-t_crit, color="#1e8c00", lw=2, linestyle="--")
-                x_rej_r = np.linspace(t_crit, 5, 200)
-                x_rej_l = np.linspace(-5, -t_crit, 200)
-                ax_t.fill_between(x_rej_r, stats.t.pdf(x_rej_r, df=df_t), alpha=0.25, color="#e8284a", label="Zone de rejet")
-                ax_t.fill_between(x_rej_l, stats.t.pdf(x_rej_l, df=df_t), alpha=0.25, color="#e8284a")
-                ax_t.set_xlabel("Valeur de t"); ax_t.set_ylabel("Densité")
-                ax_t.set_title("Distribution t de Student — Zone de rejet", color="#0066cc", fontsize=11)
-                ax_t.legend(fontsize=9)
-                fig_to_st(fig_t)
-
-    elif test_type == "Test t de Student (2 échantillons)":
-        col1, col2 = st.columns(2)
-        with col1:
-            var_t2  = st.selectbox("Variable numérique", df_num.columns.tolist())
-            grp_col = st.selectbox("Variable de groupe (2 groupes)", df.columns.tolist())
-            alpha2  = st.selectbox("Niveau α", [0.01, 0.05, 0.10], index=1)
-            run_t2  = st.button("▶ CALCULER", use_container_width=True)
-        with col2:
-            if run_t2:
-                grps = df[grp_col].dropna().unique()
-                if len(grps) < 2:
-                    st.error("La variable de groupe doit avoir au moins 2 modalités")
-                else:
-                    g1 = df[df[grp_col] == grps[0]][var_t2].dropna()
-                    g2 = df[df[grp_col] == grps[1]][var_t2].dropna()
-                    t2, p2 = stats.ttest_ind(g1, g2)
-                    col_t1, col_t2 = st.columns(2)
-                    col_t1.metric("t-stat", f"{t2:.4f}")
-                    col_t2.metric("p-valeur", f"{p2:.4f}")
-                    if p2 < alpha2:
-                        st.success(f"✅ H₀ rejetée (p={p2:.4f} < α={alpha2})")
-                    else:
-                        st.warning(f"⚠️ H₀ non rejetée (p={p2:.4f} ≥ α={alpha2})")
-                    st.info(f"Groupe {grps[0]}: n={len(g1)}, μ={g1.mean():.3f}  |  Groupe {grps[1]}: n={len(g2)}, μ={g2.mean():.3f}")
-
-    elif test_type == "Test de Shapiro-Wilk (Normalité)":
-        var_sw = st.selectbox("Variable", df_num.columns.tolist())
-        alpha_sw = st.selectbox("Niveau α", [0.01, 0.05, 0.10], index=1)
-        if st.button("▶ CALCULER", use_container_width=True):
-            data_sw = df_num[var_sw].dropna()
-            if len(data_sw) > 5000:
-                data_sw = data_sw.sample(5000, random_state=42)
-                st.warning("⚠️ Échantillon limité à 5000 obs pour Shapiro-Wilk")
-            w_stat, p_sw = stats.shapiro(data_sw)
-            c_sw1, c_sw2 = st.columns(2)
-            c_sw1.metric("W-statistique", f"{w_stat:.4f}")
-            c_sw2.metric("p-valeur", f"{p_sw:.4f}")
-            if p_sw < alpha_sw:
-                st.error(f"❌ Non-normalité détectée (p={p_sw:.4f} < {alpha_sw})")
-            else:
-                st.success(f"✅ Normalité acceptée (p={p_sw:.4f} ≥ {alpha_sw})")
-
-    elif test_type == "Test de Kolmogorov-Smirnov":
-        var_ks = st.selectbox("Variable", df_num.columns.tolist())
-        dist_ks = st.selectbox("Distribution de référence", ["norm", "expon", "uniform"])
-        if st.button("▶ CALCULER", use_container_width=True):
-            data_ks = df_num[var_ks].dropna()
-            data_std = (data_ks - data_ks.mean()) / data_ks.std()
-            ks_stat, p_ks = stats.kstest(data_std, dist_ks)
-            c_ks1, c_ks2 = st.columns(2)
-            c_ks1.metric("KS-statistique", f"{ks_stat:.4f}")
-            c_ks2.metric("p-valeur", f"{p_ks:.4f}")
-            if p_ks < 0.05:
-                st.error(f"❌ Les données ne suivent pas une loi {dist_ks} (p={p_ks:.4f})")
-            else:
-                st.success(f"✅ Les données semblent suivre une loi {dist_ks} (p={p_ks:.4f})")
-
-    elif test_type == "Test du Chi-Deux (indépendance)":
-        cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-        if len(cat_cols) < 2:
-            st.warning("Il faut au moins 2 variables catégorielles")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                var_x_chi = st.selectbox("Variable X", cat_cols)
-                var_y_chi = st.selectbox("Variable Y", [c for c in cat_cols if c != var_x_chi])
-                run_chi = st.button("▶ CALCULER", use_container_width=True)
-            with col2:
-                if run_chi:
-                    ct = pd.crosstab(df[var_x_chi], df[var_y_chi])
-                    chi2, p_chi, dof, expected = stats.chi2_contingency(ct)
-                    col_c1, col_c2, col_c3 = st.columns(3)
-                    col_c1.metric("χ²", f"{chi2:.4f}")
-                    col_c2.metric("p-valeur", f"{p_chi:.4f}")
-                    col_c3.metric("ddl", dof)
-                    if p_chi < 0.05:
-                        st.success("✅ Les deux variables sont liées (dépendance significative)")
-                    else:
-                        st.warning("⚠️ Pas d'association significative entre les variables")
-                    st.markdown("**Tableau de contingence**")
-                    st.dataframe(ct, use_container_width=True)
-
-    elif test_type == "Test de Mann-Whitney (non-paramétrique)":
-        col1, col2 = st.columns(2)
-        with col1:
-            var_mw   = st.selectbox("Variable numérique", df_num.columns.tolist())
-            grp_mw   = st.selectbox("Variable de groupe", df.columns.tolist())
-            alpha_mw = st.selectbox("Niveau α", [0.01, 0.05, 0.10], index=1)
-            run_mw   = st.button("▶ CALCULER", use_container_width=True)
-        with col2:
-            if run_mw:
-                grps_mw = df[grp_mw].dropna().unique()
-                if len(grps_mw) < 2:
-                    st.error("Il faut au moins 2 groupes")
-                else:
-                    g1 = df[df[grp_mw] == grps_mw[0]][var_mw].dropna()
-                    g2 = df[df[grp_mw] == grps_mw[1]][var_mw].dropna()
-                    u_stat, p_mw = stats.mannwhitneyu(g1, g2, alternative="two-sided")
-                    c_mw1, c_mw2 = st.columns(2)
-                    c_mw1.metric("U-statistique", f"{u_stat:.4f}")
-                    c_mw2.metric("p-valeur", f"{p_mw:.4f}")
-                    if p_mw < alpha_mw:
-                        st.success(f"✅ Différence significative (p={p_mw:.4f} < α={alpha_mw})")
-                    else:
-                        st.warning(f"⚠️ Pas de différence significative (p={p_mw:.4f})")
-
+                st.markdown("**Probabilités par classe :**")
+                for cls, prob in sorted(zip(clf_info["classes"], probs), key=lambda x: -x[1]):
+                    color = "#7c3aed" if cls == pred_class else "#d0daf0"
+                    st.markdown(f"""
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+                        <div style="font-size:11px;min-width:90px;font-weight:{'700' if cls==pred_class else '400'};color:{'#7c3aed' if cls==pred_class else '#5a6a8a'}">{cls}</div>
+                        <div style="flex:1;height:12px;background:#f0f0f0;border-radius:6px;overflow:hidden">
+                            <div style="width:{prob*100:.1f}%;height:100%;background:{color};border-radius:6px"></div>
+                        </div>
+                        <div style="font-size:11px;min-width:45px;font-weight:700;color:{'#7c3aed' if cls==pred_class else '#8a9bbf'}">{prob*100:.1f}%</div>
+                    </div>""", unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"❌ Erreur prédiction : {e}")
 
 
 # ══════════════════════════════════════════════

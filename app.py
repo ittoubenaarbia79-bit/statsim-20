@@ -1312,7 +1312,7 @@ elif section == "🎨 Graphiques":
             if fig is not None:
                 plt.tight_layout()
                 fig_to_st(fig)
-'''
+''
 
 with open('app.py', 'w', encoding='utf-8') as f:
     f.write(app_code)
